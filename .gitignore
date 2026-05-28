@@ -237,3 +237,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# zone identifiers
+*:Zone.Identifier

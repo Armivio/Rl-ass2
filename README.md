@@ -1,109 +1,125 @@
+# Reinforcement Learning on a Grid-World
 
-Welcome to Data Intelligence Challenge-2AMC15!
-This is the repository containing the challenge environment code.
+A delivery-robot grid-world solved with three families of tabular
+reinforcement-learning algorithms, for the 2AMC15 Data Intelligence Challenge. 
+The agent must navigate a discrete grid of walls and obstacles to
+reach a target cell under a stochastic transition model, while maximising its
+cumulative reward.
 
-## Quickstart
+| Family | Algorithm | Implementation |
+|---|---|---|
+| Dynamic programming | Value iteration | `agents/value_iteration_agent.py` |
+| Temporal difference | Tabular Q-learning | `agents/QLearning_agent.py` |
+| Monte Carlo | On-policy first-visit MC control | `agents/on_policy_mc.py` |
+| Monte Carlo | Off-policy MC control (weighted / ordinary IS) | `agents/off_policy_mc.py` |
 
-1. Create a virtual environment for this course with Python >= 3.10. Using conda, you can do: `conda create -n dic2025 python=3.11`. Use `conda activate dic2025` to activate it `conda deactivate` to deactivate it.
-2. Clone this repository into the local directory you prefer `git clone https://github.com/RL-In-Practice/2AMC15-2026.git`.
-3. Install the required packages `pip install -r requirements.txt`. Now, you are ready to use the simulation environment! :partying_face:	
-4. Run `$ python train.py grid_configs/example_grid.npy` to start training!
+## Setup
 
-`train.py` is just an example training script. Inside this file, initialize the agent you want to train and evaluate. Feel free to modify it as necessary. Its usage is:
-
-```bash
-usage: train.py [-h] [--no_gui] [--sigma SIGMA] [--fps FPS] [--iter ITER]
-                [--random_seed RANDOM_SEED] [--start_pos START_POS]
-                GRID [GRID ...]
-
-DIC Reinforcement Learning Trainer.
-
-positional arguments:
-  GRID                  Paths to the grid file to use. There can be more than
-                        one.
-options:
-  -h, --help                 show this help message and exit
-  --no_gui                   Disables rendering to train faster (boolean)
-  --sigma SIGMA              Sigma value for the stochasticity of the environment. (float, default=0.1, should be in [0, 1])
-  --fps FPS                  Frames per second to render at. Only used if no_gui is not set. (int, default=30)
-  --iter ITER                Number of iterations to go through. Should be integer. (int, default=1000)
-  --random_seed RANDOM_SEED  Random seed value for the environment. (int, default=0)
-  --start_pos START_POS      Agent start position as col,row (e.g. 2,3). If not set, the GUI lets you click to place it. In no_gui mode, defaults to random placement.
-```
-
-## Code guide
-
-The code is made up of 2 modules: 
-
-1. `agent`
-2. `world`
-
-### The `agent` module
-
-The `agent` module contains the `BaseAgent` class as well as some benchmark agents you may want to test against.
-
-The `BaseAgent` is an abstract class and all RL agents for DIC must inherit from/implement it.
-If you know/understand class inheritence, skip the following section:
-
-#### `BaseAgent` as an abstract class
-Here you can find an explanation about abstract classes [Geeks for Geeks](https://www.geeksforgeeks.org/abstract-classes-in-python/).
-
-Think of this like how all models in PyTorch start like 
-
-```python
-class NewModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-    ...
-```
-
-In this case, `NewModel` inherits from `nn.Module`, which gives it the ability to do back propagation, store parameters, etc. without you having to manually code that every time.
-It also ensures that every class that inherits from `nn.Module` contains _at least_ the `forward()` method, which allows a forward pass to actually happen.
-
-In the case of your RL agent, inheriting from `BaseAgent` guarantees that your agent implements `update()` and `take_action()`.
-This ensures that no matter what RL agent you make and however you code it, the environment and training code can always interact with it in the same way.
-Check out the benchmark agents to see examples.
-
-### The `world` module
-
-The world module contains:
-1. `grid_creator.py`
-2. `environment.py`
-3. `grid.py`
-4. `gui.py`
-
-#### Grid creator
-Run this file to create new grids.
+Requires Python >= 3.10.
 
 ```bash
-$ python grid_creator.py
+python -m venv venv
+# Windows:        venv\Scripts\activate
+# Linux / macOS:  source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-This will start up a web server where you create new grids, of different sizes with various elements arrangements.
-To view the grid creator itself, go to `127.0.0.1:5000`.
-All levels will be saved to the `grid_configs/` directory.
+## Repository structure
 
+```
+agents/                      RL agents (all implement agents/base_agent.py)
+  value_iteration_agent.py     value iteration (DP)
+  QLearning_agent.py           tabular Q-learning (TD)
+  on_policy_mc.py              on-policy first-visit MC control
+  off_policy_mc.py             off-policy MC control (weighted + ordinary IS)
+  null_agent.py, random_agent.py   benchmark baselines
+world/                       grid-world simulator (environment, grid, GUI, grid creator)
+grid_configs/                grid layouts (.npy), including the mandatory A1_grid.npy
+results/                     Q-learning and Monte-Carlo outputs
+results/VI/                  multi-seed value-iteration outputs and report figures
+results/VI/demo_runs/        outputs and path figures from single GUI/evaluation runs
 
-#### The Environment
+run_experiments.py           runs the six value-iteration experiments
+QLearning_train.py           Q-learning hyper-parameter sweep
+train_mc.py                  Monte-Carlo hyper-parameter sweep
+train_VI.py                  single-run trainer / GUI demo
+aggregate_results.py         aggregates multi-seed runs into summary.csv + plots
+make_vi_figures.py           renders value / policy / convergence figures
+create_custom_grid.py        builds grid_configs/custom_grid.npy (VI experiment 4)
+evaluate.py                  plotting helpers (imported by the scripts above)
+report.tex, ref.bib          report sources (LaTeX)
+```
 
-The `Environment` is very important because it contains everything we hold dear, including ourselves [^1].
-It is also the name of the class which our RL agent will act within. Most of the action happens in there.
+## Reproducing the report
 
-The main interaction with `Environment` is through the methods:
+Each results table in the report is produced by one script. First build the
+custom grid used by value-iteration experiment 4:
 
-- `Environment()` to initialize the environment
-- `reset()` to reset the environment
-- `step()` to actually take a time step with the environment
-- `Environment().evaluate_agent()` to evaluate the agent after training.
+```bash
+python create_custom_grid.py
+```
 
-[^1]: In case you missed it, this sentence is a joke. Please do not write all your code in the `Environment` class.
+### Value iteration — "VI results" table
 
-#### The Grid
+```bash
+python run_experiments.py --experiment all --seeds 42 43 44 45 46 --n_eval_episodes 200 --max_steps 1000
+python aggregate_results.py
+python make_vi_figures.py
+```
 
-The `Grid` class is the the actual representation of the world on which the agent moves. It is a 2D Numpy array.
+`aggregate_results.py` writes `results/VI/summary_VI.csv` (the mean ± std
+numbers in the table); `make_vi_figures.py` writes the value-function, policy
+and convergence figures used in the report to `results/VI/figures/`.
 
-#### The GUI
+### Q-learning — "Q-learning results" table
 
-The Graphical User Interface provides a way for you to actually see what the RL agent is doing.
-While performant and written using PyGame, it is still about 1300x slower than not running a GUI.
-Because of this, we recommend using it only while testing/debugging and not while training.
+```bash
+python QLearning_train.py grid_configs/A1_grid.npy grid_configs/large_grid.npy --no_gui --start_pos 1,12 --gammas 0.9 0.6 --sigmas 0.02 0.5 --epsilons 0.1 0.3 --max_steps 200 1000 --iter 1000 --eval_iter 100 --alpha 0.1
+```
+
+Runs all 32 configurations (16 per grid). The combined results land in
+`results/q_learning/summary/q_learning_eval_summary.csv`, with per-setup
+training logs and convergence plots under `results/q_learning/setup_*/`.
+
+### Monte Carlo — "MC results" table
+
+```bash
+python train_mc.py --grids grid_configs/A1_grid.npy grid_configs/large_grid.npy --episodes 1000 --out results/mc_results.csv
+```
+
+Trains the on-policy and off-policy MC agents over all 32 configurations and
+writes one row per (grid × algorithm × hyper-parameters) to
+`results/mc_results.csv`. The off-policy agent reports both its weighted-IS
+and ordinary-IS estimators.
+
+## Single run and GUI demo
+
+`train_VI.py` rolls out one agent on one grid and renders the visited path. It
+supports value iteration and the `random` / `null` baselines (Q-learning and
+the Monte-Carlo agents are episodic and use the dedicated scripts above).
+
+```bash
+# watch value iteration solve A1_grid in the GUI
+python train_VI.py grid_configs/A1_grid.npy --agent vi --start_pos 1,12 --sigma 0.02
+
+# same, without the GUI (much faster)
+python train_VI.py grid_configs/A1_grid.npy --agent vi --start_pos 1,12 --sigma 0.02 --no_gui
+```
+
+## Creating grids
+
+```bash
+python world/grid_creator.py    # interactive web editor at http://127.0.0.1:5000
+python create_custom_grid.py    # the 8x8 bottleneck grid used by VI experiment 4
+```
+
+## Environment conventions
+
+- **Grid array.** A grid is a NumPy array of shape `(n_cols, n_rows)` indexed
+  `grid[col, row]`; agent positions are `(col, row)` tuples.
+- **Cell codes.** `0` empty, `1` wall, `2` obstacle, `3` target, `4` start.
+- **Actions.** `0` down, `1` up, `2` left, `3` right.
+- **Stochasticity.** With probability `1 - sigma` the chosen action runs;
+  otherwise a uniformly random action runs instead.
+- **Rewards.** `-1` per step, `-5` for hitting a wall or obstacle, `+10` for reaching the target. An episode ends when the target is
+  reached or the step limit is hit.
