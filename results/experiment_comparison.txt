@@ -1,0 +1,66 @@
+========================================================================
+DQN EXPERIMENT COMPARISON  (frame_stack=1, orientation=on)
+========================================================================
+
+Grid: small_grid
+  Experiment                                      Succ (mean+/-std)      Steps (mean+/-std)     Return (mean+/-std)
+  ----------------------------------------------------------------------------------------------------------------
+  Progress reward (w=0.5), no obstacle penalty       1.000 +/- 0.000             5.6 +/- 0.1             8.1 +/- 0.1
+  Progress reward (w=0.5) + obstacle penalty (w=0.1)       1.000 +/- 0.000             5.6 +/- 0.1             7.9 +/- 0.1
+
+Grid: A1_grid
+  Experiment                                      Succ (mean+/-std)      Steps (mean+/-std)     Return (mean+/-std)
+  ----------------------------------------------------------------------------------------------------------------
+  Progress reward (w=0.5), no obstacle penalty       0.920 +/- 0.113            24.2 +/- 0.4          -21.9 +/- 21.6
+  Progress reward (w=0.5) + obstacle penalty (w=0.1)       0.863 +/- 0.193            23.7 +/- 0.5          -35.5 +/- 39.3
+
+Grid: large_grid
+  Experiment                                      Succ (mean+/-std)      Steps (mean+/-std)     Return (mean+/-std)
+  ----------------------------------------------------------------------------------------------------------------
+  Progress reward (w=0.5), no obstacle penalty       0.343 +/- 0.109            17.1 +/- 0.6         -131.2 +/- 21.6
+  Progress reward (w=0.5) + obstacle penalty (w=0.1)       0.280 +/- 0.242            16.7 +/- 0.6         -154.7 +/- 50.9
+
+========================================================================
+OVERALL (mean across all grids and seeds)
+========================================================================
+  Experiment                                      Succ (mean+/-std)
+  --------------------------------------------------------------------
+  Progress reward (w=0.5), no obstacle penalty       0.754 +/- 0.306
+  Progress reward (w=0.5) + obstacle penalty (w=0.1)       0.714 +/- 0.360
+
+========================================================================
+ANALYSIS
+========================================================================
+
+Experiment 1 (baseline for this comparison):
+  Progress shaping alone. The agent receives a bonus proportional
+  to Manhattan-distance reduction each step. This guides exploration
+  toward the target without revealing its location in the state.
+
+Experiment 2 (adds obstacle-proximity penalty w=0.1):
+  On top of Exp 1, a small penalty fires when the nearest ray
+  reading is below 0.15 (i.e. the agent is within ~15% of the
+  max ray length from a wall or obstacle). The penalty scales
+  linearly: 0 at threshold, -0.1 at the wall face.
+
+Per-grid success-rate delta (Exp2 - Exp1):
+  small_grid      : ++0.000
+  A1_grid         : -0.057
+  large_grid      : -0.063
+
+Interpretation:
+  A positive delta means the proximity penalty helped; the agent
+  learned to stay away from walls, reducing wasted collision steps
+  and improving path efficiency. A negative delta means the extra
+  penalty introduced conflicting gradient signal that destabilised
+  learning for this grid/episode budget -- the agent learned to
+  avoid obstacles but at the cost of reduced goal-seeking behaviour.
+
+Note: all runs use frame_stack=1 + explicit orientation feature
+(8 ray distances + 2D heading vector = 10-dim observation),
+auto-computed eps_decay = 0.7 x episodes x max_steps = 84,000 steps,
+curriculum start radius 4, eval starts >= 60% max Manhattan distance.
+
+Path images (greedy rollout from far start) are saved per seed:
+  results/exp1_progress/<grid>/seed<k>/eval_path.png
+  results/exp2_progress_obstacle/<grid>/seed<k>/eval_path.png

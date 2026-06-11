@@ -1,0 +1,4 @@
+seed,grid,frame_stack,step_penalty,collision_penalty,target_reward,eval_min_dist,final_train_success,eval_success_rate,eval_avg_steps,eval_avg_return
+0,small_grid,1,-1.0,-5.0,10.0,4,1.0,1.0,5.41,7.9503537101944275
+1,small_grid,1,-1.0,-5.0,10.0,4,1.0,1.0,5.52,7.872788143783809
+2,small_grid,1,-1.0,-5.0,10.0,4,1.0,1.0,5.74,7.766192544807991
