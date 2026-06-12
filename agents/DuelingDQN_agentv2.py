@@ -14,15 +14,7 @@ from agents import BaseAgent
 
 
 class DuelingQNetwork(nn.Module):
-    """
-    Dueling DQN network.
-
-    The network estimates Q(s, a) through two streams:
-        V(s): state value
-        A(s, a): action advantage
-
-    Q(s, a) = V(s) + A(s, a) - mean_a A(s, a)
-    """
+    """Dueling DQN network for continuous vector observations."""
 
     def __init__(self, state_dim: int, n_actions: int, hidden_dim: int = 128):
         super().__init__()
@@ -54,6 +46,7 @@ class DuelingQNetwork(nn.Module):
 
 
 class DuelingDQNAgent(BaseAgent):
+    """Dueling DQN baseline with extra training controls for experiments."""
 
     def __init__(
         self,
@@ -71,9 +64,16 @@ class DuelingDQNAgent(BaseAgent):
         target_update_freq: int = 200,
         state_scale: float = 1.0,
         double_dqn: bool = True,
+        train_freq: int = 1,
+        max_grad_norm: float = 10.0,
+        seed: int = 0,
         device: str | None = None,
     ):
         super().__init__()
+
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
         self.n_actions = n_actions
         self.state_dim = state_dim
@@ -92,6 +92,9 @@ class DuelingDQNAgent(BaseAgent):
         self.state_scale = float(state_scale) if state_scale else 1.0
         self.double_dqn = double_dqn
 
+        self.train_freq = max(1, int(train_freq))
+        self.max_grad_norm = float(max_grad_norm)
+
         self.device = torch.device(
             device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         )
@@ -108,6 +111,7 @@ class DuelingDQNAgent(BaseAgent):
         self.last_action: int | None = None
         self.training = True
         self.learn_step = 0
+        self.env_step = 0
 
         self.observed_states: set[tuple[float, ...]] = set()
 
@@ -119,8 +123,7 @@ class DuelingDQNAgent(BaseAgent):
                 f"Expected state_dim={self.state_dim}, got state with shape {np.asarray(state).shape}: {state}"
             )
 
-        state_tuple = tuple(float(x) for x in state_array)
-        self.observed_states.add(state_tuple)
+        self.observed_states.add(tuple(float(x) for x in state_array))
         return state_array
 
     def _states_to_tensor(
@@ -134,7 +137,8 @@ class DuelingDQNAgent(BaseAgent):
 
         if states_array.shape[1] != self.state_dim:
             raise ValueError(
-                f"Expected state_dim={self.state_dim}, got states with shape {states_array.shape}")
+                f"Expected state_dim={self.state_dim}, got states with shape {states_array.shape}"
+            )
 
         states_array = states_array / self.state_scale
         return torch.tensor(states_array, dtype=torch.float32, device=self.device)
@@ -147,60 +151,54 @@ class DuelingDQNAgent(BaseAgent):
         self.training = False
         self.q_net.eval()
 
+    @torch.no_grad()
+    def _greedy_action(self, state_array: np.ndarray) -> int:
+        q_values = self.q_net(self._states_to_tensor(state_array))
+        return int(q_values.argmax(dim=1).item())
+
     def take_action(self, state) -> int:
         state_array = self._ensure_state(state)
 
         if self.training and random.random() < self.epsilon:
             action = random.randint(0, self.n_actions - 1)
         else:
-            with torch.no_grad():
-                state_tensor = self._states_to_tensor(state_array)
-                q_values = self.q_net(state_tensor)
-                action = int(torch.argmax(q_values, dim=1).item())
+            action = self._greedy_action(state_array)
 
         self.last_state = state_array
         self.last_action = action
         return action
 
     def update(self, state, reward: float, action: int, terminated: bool = False):
-        """
-        Returns:
-            float | None: latest minibatch loss, or None if the replay buffer is
-            not ready yet.
-        """
-        if not self.training:
-            return None
-
-        if self.last_state is None or self.last_action is None:
+        """Store a transition and optionally run a gradient update."""
+        if not self.training or self.last_state is None:
             return None
 
         old_state = self.last_state
-        old_action = int(action) if action is not None else int(self.last_action)
         next_state = self._ensure_state(state)
-        done = bool(terminated)
 
         self.replay_buffer.append(
             (
                 old_state,
-                old_action,
+                int(action),
                 float(reward),
                 next_state,
-                done,
+                bool(terminated),
             )
         )
 
+        self.env_step += 1
         loss = self._learn_from_replay()
 
-        if done:
+        if terminated:
             self.reset_episode()
 
         return loss
 
     def _learn_from_replay(self):
-        if len(self.replay_buffer) < self.train_start:
+        if len(self.replay_buffer) < max(self.batch_size, self.train_start):
             return None
 
-        if len(self.replay_buffer) < self.batch_size:
+        if self.env_step % self.train_freq != 0:
             return None
 
         batch = random.sample(self.replay_buffer, self.batch_size)
@@ -216,7 +214,6 @@ class DuelingDQNAgent(BaseAgent):
 
         with torch.no_grad():
             if self.double_dqn:
-                # Online network chooses the action; target network evaluates it.
                 next_actions = self.q_net(next_states_tensor).argmax(dim=1, keepdim=True)
                 next_q = self.target_net(next_states_tensor).gather(1, next_actions).squeeze(1)
             else:
@@ -228,7 +225,7 @@ class DuelingDQNAgent(BaseAgent):
 
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=10.0)
+        torch.nn.utils.clip_grad_norm_(self.q_net.parameters(), max_norm=self.max_grad_norm)
         self.optimizer.step()
 
         self.learn_step += 1
@@ -257,17 +254,11 @@ class DuelingDQNAgent(BaseAgent):
 
         return q_values
 
-    def get_policy(self) -> dict[tuple[int, ...], int]:
-        policy = {}
-        for state in self.observed_states:
-            policy[state] = int(np.argmax(self.get_q_values(state)))
-        return policy
+    def get_policy(self) -> dict[tuple[float, ...], int]:
+        return {s: int(np.argmax(self.get_q_values(s))) for s in self.observed_states}
 
-    def get_value_function(self) -> dict[tuple[int, ...], float]:
-        values = {}
-        for state in self.observed_states:
-            values[state] = float(np.max(self.get_q_values(state)))
-        return values
+    def get_value_function(self) -> dict[tuple[float, ...], float]:
+        return {s: float(np.max(self.get_q_values(s))) for s in self.observed_states}
 
     def save_model(self, path: str | Path):
         path = Path(path)
@@ -279,6 +270,7 @@ class DuelingDQNAgent(BaseAgent):
             "optimizer": self.optimizer.state_dict(),
             "epsilon": self.epsilon,
             "learn_step": self.learn_step,
+            "env_step": self.env_step,
             "observed_states": list(self.observed_states),
             "replay_buffer": list(self.replay_buffer),
             "config": {
@@ -295,6 +287,8 @@ class DuelingDQNAgent(BaseAgent):
                 "target_update_freq": self.target_update_freq,
                 "state_scale": self.state_scale,
                 "double_dqn": self.double_dqn,
+                "train_freq": self.train_freq,
+                "max_grad_norm": self.max_grad_norm,
             },
         }
 
@@ -312,6 +306,7 @@ class DuelingDQNAgent(BaseAgent):
 
         self.epsilon = checkpoint.get("epsilon", self.epsilon)
         self.learn_step = checkpoint.get("learn_step", 0)
+        self.env_step = checkpoint.get("env_step", 0)
         self.observed_states = {tuple(s) for s in checkpoint.get("observed_states", [])}
 
         self.replay_buffer.clear()
@@ -326,7 +321,6 @@ class DuelingDQNAgent(BaseAgent):
                 )
             )
 
-    # Compatibility names. They are not actually saving a Q-table anymore.
     def save_q_table(self, path: str | Path):
         self.save_model(path)
 

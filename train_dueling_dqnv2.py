@@ -14,11 +14,11 @@ import numpy as np
 import torch
 
 from world.continuous_env import ContinuousEnvironment
-from agents.DuelingDQN_agent import DuelingDQNAgent
+from agents.DuelingDQN_agentv2 import DuelingDQNAgent
 
 
 def parse_args():
-    p = ArgumentParser(description="DIC Reinforcement Learning Dueling DQN Trainer.")
+    p = ArgumentParser(description="DIC Reinforcement Learning Dueling DQN v2 Trainer.")
 
     p.add_argument(
         "GRID",
@@ -38,7 +38,6 @@ def parse_args():
     p.add_argument("--iter", type=int, default=3000, help="Number of training episodes.")
     p.add_argument("--eval_iter", type=int, default=100, help="Number of evaluation episodes.")
 
-    # Keep --alpha so your old command style still works.
     p.add_argument("--alpha", type=float, default=1e-3, help="DQN learning rate.")
 
     p.add_argument("--epsilon_decay", type=float, default=0.995, help="Multiplicative epsilon decay per episode.")
@@ -52,6 +51,9 @@ def parse_args():
     p.add_argument("--state_scale", type=float, default=None, help="State normalization scale. If omitted, inferred from grid shape when possible.")
     p.add_argument("--disable_double_dqn", action="store_true", help="Use vanilla DQN target instead of Double DQN target.")
 
+    p.add_argument("--train_freq", type=int, default=1, help="Run one gradient update every N environment steps.")
+    p.add_argument("--max_grad_norm", type=float, default=10.0, help="Gradient clipping norm.")
+
     p.add_argument("--random_seed", type=int, default=0, help="Random seed value.")
     p.add_argument(
         "--start_pos",
@@ -63,7 +65,7 @@ def parse_args():
     p.add_argument(
         "--output_dir",
         type=Path,
-        default=Path("results/dueling_dqn"),
+        default=Path("results/dueling_dqn_v2"),
         help="Folder to save results.",
     )
 
@@ -154,6 +156,8 @@ def save_summary(path, rows):
         "hidden_dim",
         "state_scale",
         "double_dqn",
+        "train_freq",
+        "max_grad_norm",
         "max_steps",
         "train_episodes",
         "eval_episodes",
@@ -237,30 +241,30 @@ def plot_summary(output_dir, rows):
     plt.bar(setup_ids, success_rates)
     plt.xlabel("Setup")
     plt.ylabel("Final success rate")
-    plt.title("Dueling DQN final success rate")
+    plt.title("Dueling DQN v2 final success rate")
     plt.xticks(rotation=90)
     plt.tight_layout()
-    plt.savefig(summary_dir / "dueling_dqn_success_rate_all_setups.png")
+    plt.savefig(summary_dir / "dueling_dqn_v2_success_rate_all_setups.png")
     plt.close()
 
     plt.figure(figsize=(12, 5))
     plt.bar(setup_ids, returns)
     plt.xlabel("Setup")
     plt.ylabel("Average discounted return")
-    plt.title("Dueling DQN average discounted return")
+    plt.title("Dueling DQN v2 average discounted return")
     plt.xticks(rotation=90)
     plt.tight_layout()
-    plt.savefig(summary_dir / "dueling_dqn_discounted_return_all_setups.png")
+    plt.savefig(summary_dir / "dueling_dqn_v2_discounted_return_all_setups.png")
     plt.close()
 
     plt.figure(figsize=(12, 5))
     plt.bar(setup_ids, lengths)
     plt.xlabel("Setup")
     plt.ylabel("Average episode length")
-    plt.title("Dueling DQN average episode length")
+    plt.title("Dueling DQN v2 average episode length")
     plt.xticks(rotation=90)
     plt.tight_layout()
-    plt.savefig(summary_dir / "dueling_dqn_episode_length_all_setups.png")
+    plt.savefig(summary_dir / "dueling_dqn_v2_episode_length_all_setups.png")
     plt.close()
 
 
@@ -328,6 +332,8 @@ def train_one_setup(
     hidden_dim,
     state_scale,
     double_dqn,
+    train_freq,
+    max_grad_norm,
     random_seed,
     start_pos,
     output_dir,
@@ -358,6 +364,8 @@ def train_one_setup(
     print("Train start:", train_start)
     print("Target update freq:", target_update_freq)
     print("Observation size:", env.obs_size)
+    print("Train frequency:", train_freq)
+    print("Max grad norm:", max_grad_norm)
     print("Double DQN target:", double_dqn)
     print("Setup folder:", setup_dir)
 
@@ -376,6 +384,9 @@ def train_one_setup(
         target_update_freq=target_update_freq,
         state_scale=state_scale_for_run,
         double_dqn=double_dqn,
+        train_freq=train_freq,
+        max_grad_norm=max_grad_norm,
+        seed=random_seed,
     )
 
     agent.train_mode()
@@ -467,7 +478,7 @@ def train_one_setup(
 
     plot_convergence(setup_dir, logs, run_name)
 
-    model_path = setup_dir / "dueling_dqn_model.pt"
+    model_path = setup_dir / "dueling_dqn_v2_model.pt"
     agent.save_model(model_path)
 
     eval_result = evaluate_agent(
@@ -509,6 +520,8 @@ def train_one_setup(
             "hidden_dim": int(hidden_dim),
             "state_scale": float(state_scale_for_run),
             "double_dqn": bool(double_dqn),
+            "train_freq": int(train_freq),
+            "max_grad_norm": float(max_grad_norm),
             "max_steps": int(max_steps),
             "train_episodes": int(iters),
             "eval_episodes": int(eval_iter),
@@ -548,6 +561,8 @@ def main(
     hidden_dim: int,
     state_scale: float | None,
     double_dqn: bool,
+    train_freq: int,
+    max_grad_norm: float,
     random_seed: int,
     start_pos: tuple[int, int] | None,
     output_dir: Path,
@@ -583,6 +598,8 @@ def main(
                             hidden_dim=hidden_dim,
                             state_scale=state_scale,
                             double_dqn=double_dqn,
+                            train_freq=train_freq,
+                            max_grad_norm=max_grad_norm,
                             random_seed=random_seed,
                             start_pos=start_pos,
                             output_dir=output_dir,
@@ -591,7 +608,7 @@ def main(
                         all_summaries.append(summary)
                         setup_id += 1
 
-    summary_path = output_dir / "summary" / "dueling_dqn_eval_summary.csv"
+    summary_path = output_dir / "summary" / "dueling_dqn_v2_eval_summary.csv"
     save_summary(summary_path, all_summaries)
     plot_summary(output_dir, all_summaries)
 
@@ -628,6 +645,8 @@ if __name__ == "__main__":
         hidden_dim=args.hidden_dim,
         state_scale=args.state_scale,
         double_dqn=not args.disable_double_dqn,
+        train_freq=args.train_freq,
+        max_grad_norm=args.max_grad_norm,
         random_seed=args.random_seed,
         start_pos=start_pos,
         output_dir=args.output_dir,
