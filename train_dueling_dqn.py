@@ -53,6 +53,10 @@ def parse_args():
     p.add_argument("--disable_double_dqn", action="store_true", help="Use vanilla DQN target instead of Double DQN target.")
 
     p.add_argument("--random_seed", type=int, default=0, help="Random seed value.")
+    p.add_argument("--seeds", type=int, nargs="+", default=None,
+                   help="One or more random seeds to run. If omitted, --random_seed is used.")
+    p.add_argument("--episodes", type=int, default=None,
+                   help="Override number of training episodes (alias for --iter).")
     p.add_argument(
         "--start_pos",
         type=str,
@@ -66,6 +70,9 @@ def parse_args():
         default=Path("results/dueling_dqn"),
         help="Folder to save results.",
     )
+    # Optional progress normalization for reward shaping
+    p.add_argument("--progress_normalize", action="store_true",
+                   help="Option 2: normalise progress reward by grid scale.")
 
     return p.parse_args()
 
@@ -264,7 +271,8 @@ def plot_summary(output_dir, rows):
     plt.close()
 
 
-def evaluate_agent(grid, agent, eval_iter, max_steps, sigma, gamma, random_seed, start_pos):
+def evaluate_agent(grid, agent, eval_iter, max_steps, sigma, gamma, random_seed, start_pos, reward_kwargs=None):
+    reward_kwargs = reward_kwargs or {}
     agent.eval_mode()
 
     env = ContinuousEnvironment(
@@ -272,6 +280,7 @@ def evaluate_agent(grid, agent, eval_iter, max_steps, sigma, gamma, random_seed,
         sigma=sigma,
         max_steps=max_steps,
         random_seed=random_seed,
+        **reward_kwargs
     )
 
     returns = []
@@ -331,6 +340,8 @@ def train_one_setup(
     random_seed,
     start_pos,
     output_dir,
+    # new reward shaping options 2 and 7
+    reward_kwargs,
 ):
     set_global_seeds(random_seed)
 
@@ -343,6 +354,7 @@ def train_one_setup(
         sigma=sigma,
         max_steps=max_steps,
         random_seed=random_seed,
+        **reward_kwargs
     )
 
     state_scale_for_run = 1.0 if state_scale is None else float(state_scale)
@@ -479,6 +491,7 @@ def train_one_setup(
         gamma,
         random_seed,
         start_pos,
+        reward_kwargs=reward_kwargs,
     )
 
     print("\nTraining finished for setup", setup_id)
@@ -551,45 +564,54 @@ def main(
     random_seed: int,
     start_pos: tuple[int, int] | None,
     output_dir: Path,
+    # new: list of seeds (optional)
+    seeds: list[int] | None,
+    # new reward shaping options 2 and 7
+    reward_kwargs: dict,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_summaries = []
     setup_id = 1
+    # Determine seeds to run: explicit list overrides single random_seed
+    seeds_to_run = seeds if (seeds is not None and len(seeds) > 0) else [random_seed]
 
-    for grid in grid_paths:
-        for gamma in gammas:
-            for sigma in sigmas:
-                for epsilon in epsilons:
-                    for max_steps in max_steps_values:
-                        summary = train_one_setup(
-                            setup_id=setup_id,
-                            grid=grid,
-                            no_gui=no_gui,
-                            iters=iters,
-                            eval_iter=eval_iter,
-                            fps=fps,
-                            gamma=gamma,
-                            sigma=sigma,
-                            epsilon=epsilon,
-                            max_steps=max_steps,
-                            alpha=alpha,
-                            epsilon_decay=epsilon_decay,
-                            min_epsilon=min_epsilon,
-                            batch_size=batch_size,
-                            buffer_size=buffer_size,
-                            train_start=train_start,
-                            target_update_freq=target_update_freq,
-                            hidden_dim=hidden_dim,
-                            state_scale=state_scale,
-                            double_dqn=double_dqn,
-                            random_seed=random_seed,
-                            start_pos=start_pos,
-                            output_dir=output_dir,
-                        )
+    for seed in seeds_to_run:
+        for grid in grid_paths:
+            for gamma in gammas:
+                for sigma in sigmas:
+                    for epsilon in epsilons:
+                        for max_steps in max_steps_values:
+                            summary = train_one_setup(
+                                setup_id=setup_id,
+                                grid=grid,
+                                no_gui=no_gui,
+                                iters=iters,
+                                eval_iter=eval_iter,
+                                fps=fps,
+                                gamma=gamma,
+                                sigma=sigma,
+                                epsilon=epsilon,
+                                max_steps=max_steps,
+                                alpha=alpha,
+                                epsilon_decay=epsilon_decay,
+                                min_epsilon=min_epsilon,
+                                batch_size=batch_size,
+                                buffer_size=buffer_size,
+                                train_start=train_start,
+                                target_update_freq=target_update_freq,
+                                hidden_dim=hidden_dim,
+                                state_scale=state_scale,
+                                double_dqn=double_dqn,
+                                random_seed=seed,
+                                start_pos=start_pos,
+                                output_dir=output_dir,
+                                # new reward shaping options 2 and 7
+                                reward_kwargs=reward_kwargs,
+                            )
 
-                        all_summaries.append(summary)
-                        setup_id += 1
+                            all_summaries.append(summary)
+                            setup_id += 1
 
     summary_path = output_dir / "summary" / "dueling_dqn_eval_summary.csv"
     save_summary(summary_path, all_summaries)
@@ -607,11 +629,14 @@ if __name__ == "__main__":
     if args.start_pos is not None:
         parts = args.start_pos.split(",")
         start_pos = (int(parts[0]), int(parts[1]))
+    # Determine iterations and seed list: command-line --episodes and --seeds override defaults
+    iters_value = args.episodes if (args.episodes is not None) else args.iter
+    seeds_value = args.seeds if (args.seeds is not None and len(args.seeds) > 0) else None
 
     main(
         grid_paths=args.GRID,
         no_gui=args.no_gui,
-        iters=args.iter,
+        iters=iters_value,
         eval_iter=args.eval_iter,
         fps=args.fps,
         gammas=args.gammas,
@@ -629,6 +654,11 @@ if __name__ == "__main__":
         state_scale=args.state_scale,
         double_dqn=not args.disable_double_dqn,
         random_seed=args.random_seed,
+        seeds=seeds_value,
         start_pos=start_pos,
         output_dir=args.output_dir,
+        # Optional progress normalization for reward shaping
+        reward_kwargs=dict(
+            progress_normalize=args.progress_normalize,
+        ),
     )

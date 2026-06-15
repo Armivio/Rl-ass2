@@ -9,8 +9,8 @@ Examples
     python train_dqn.py grid_configs/small_grid.npy --episodes 400
 
     # all main grids, 3 seeds, custom reward
-    python train_dqn.py grid_configs/small_grid.npy grid_configs/A1_grid.npy \\
-        grid_configs/large_grid.npy --episodes 1000 --seeds 0 1 2 \\
+    python train_dqn.py grid_configs/small_grid.npy grid_configs/A1_grid.npy 
+        grid_configs/large_grid.npy --episodes 1000 --seeds 0 1 2 
         --step_penalty -1 --collision_penalty -5 --target_reward 10
 
 Outputs (per seed) land in ``results/dqn/<grid>/seed<k>/``:
@@ -110,6 +110,7 @@ def train_one_seed(grid_fp: Path, seed: int, args, out_dir: Path) -> dict:
         progress_reward_weight=args.progress_reward,
         obstacle_proximity_weight=args.obstacle_penalty,
         obstacle_proximity_threshold=args.obstacle_threshold,
+        progress_normalize=args.progress_normalize,
         random_seed=seed,
         reward_fn=reward_fn,
     )
@@ -384,6 +385,10 @@ def parse_args():
     p.add_argument("--device", type=str, default=None,
                    help="'cpu', 'cuda', or omit to auto-select.")
     p.add_argument("--out", type=Path, default=Path("results/dqn"))
+
+    # Optional progress normalization for reward shaping
+    p.add_argument("--progress_normalize", action="store_true",
+                   help="Option 2: normalise progress reward by grid scale.")
     return p.parse_args()
 
 
@@ -392,6 +397,12 @@ def main():
     all_summaries = []
 
     for grid_fp in args.GRID:
+        if not grid_fp.exists():
+            raise FileNotFoundError(
+                f"Grid file does not exist: {grid_fp}. "
+                "Pass one or more real .npy grid paths instead of '...'."
+            )
+
         grid_out = args.out / grid_fp.stem
         grid_out.mkdir(parents=True, exist_ok=True)
 

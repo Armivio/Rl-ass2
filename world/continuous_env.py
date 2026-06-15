@@ -68,6 +68,8 @@ class ContinuousEnvironment:
             0.0 disables it.
         obstacle_proximity_threshold: Normalised ray distance below which the
             proximity penalty activates (e.g. 0.15 = within 15 % of max_ray_len).
+        progress_normalize: If True, divide progress reward by the grid's
+            maximum Manhattan distance to make the shaping scale more uniform.
         random_seed: Seed for start-position sampling.
         reward_fn: Base reward function (step/collision/target).  Defaults to
             the environment's built-in reward.
@@ -84,6 +86,7 @@ class ContinuousEnvironment:
                  progress_reward_weight: float = 0.0,
                  obstacle_proximity_weight: float = 0.0,
                  obstacle_proximity_threshold: float = 0.15,
+                 progress_normalize: bool = False,
                  random_seed: int = 0,
                  reward_fn: callable | None = None):
         if n_rays != len(RAY_DIRECTIONS):
@@ -100,6 +103,7 @@ class ContinuousEnvironment:
         self.progress_reward_weight = progress_reward_weight
         self.obstacle_proximity_weight = obstacle_proximity_weight
         self.obstacle_proximity_threshold = obstacle_proximity_threshold
+        self.progress_normalize = progress_normalize
         self.random_seed = random_seed
         self._rng = np.random.default_rng(random_seed)
 
@@ -247,23 +251,28 @@ class ContinuousEnvironment:
         self._frames.append(raw_obs)
         obs = self._stacked_observation()
 
+        target_reached = bool(env_info.get("target_reached", False)) or terminated
+        truncated = (not target_reached) and (self._step_count >= self.max_steps)
+        done = target_reached or truncated
+
         # ---- reward shaping -----------------------------------------------
         shaped_reward = float(base_reward)
 
+        # Progress shaping (Option 2: optional normalisation by grid scale so
+        # one-cell progress has comparable magnitude across grid sizes).
         if self.progress_reward_weight != 0.0:
             new_dist = self._manhattan_to_target(self.env.agent_pos)
-            # Positive when closer, negative when further, zero when stuck.
-            shaped_reward += self.progress_reward_weight * (prev_dist - new_dist)
+            delta = prev_dist - new_dist          # >0 closer, <0 further, 0 stuck
+            if self.progress_normalize:
+                delta = delta / max(1, self.max_manhattan_from_target)
+            shaped_reward += self.progress_reward_weight * delta
 
+        # Obstacle-proximity penalty (safety).
         if self.obstacle_proximity_weight != 0.0:
             min_ray = float(raw_obs[:self.n_rays].min())
             if min_ray < self.obstacle_proximity_threshold:
                 shaped_reward -= self.obstacle_proximity_weight * (
                     1.0 - min_ray / self.obstacle_proximity_threshold)
-
-        target_reached = bool(env_info.get("target_reached", False)) or terminated
-        truncated = (not target_reached) and (self._step_count >= self.max_steps)
-        done = target_reached or truncated
 
         info = {
             "target_reached": target_reached,
