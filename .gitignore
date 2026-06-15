@@ -240,3 +240,15 @@ venv.bak/
 
 # zone identifiers
 *:Zone.Identifier
+
+#########################################
+#   Assignment 2 — Deep RL experiments  #
+#########################################
+# Local virtual environment (~1.2 GB) — never commit, recreate from requirements.txt
+.venv/
+venv/
+# Live training stdout log (regenerable noise)
+experiments/results/run.log
+# NOTE: trained models (experiments/results/models/*.pt), CSV metrics and plots
+# ARE committed intentionally so colleagues can reuse them without retraining.
+# (Dueling .pt files are ~16 MB each because they embed the replay buffer.)

@@ -27,3 +27,10 @@ six==1.17.0
 tqdm==4.67.3
 Werkzeug==3.1.8
 wsproto==1.3.2
+
+# --- Assignment-2 Deep RL additions ---
+# torch powers the DQN / Dueling DQN networks; pandas is used by the
+# experiments/ metrics + plots. For a smaller CPU-only torch install use:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch==2.12.0
+pandas==3.0.3
