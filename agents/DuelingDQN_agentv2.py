@@ -14,7 +14,7 @@ from agents import BaseAgent
 
 
 class DuelingQNetwork(nn.Module):
-    """Dueling DQN network for continuous vector observations."""
+    """Dueling DQN network for vector observations."""
 
     def __init__(self, state_dim: int, n_actions: int, hidden_dim: int = 128):
         super().__init__()
@@ -42,11 +42,31 @@ class DuelingQNetwork(nn.Module):
         features = self.feature(states)
         values = self.value_stream(features)
         advantages = self.advantage_stream(features)
+
         return values + advantages - advantages.mean(dim=1, keepdim=True)
 
 
 class DuelingDQNAgent(BaseAgent):
-    """Dueling DQN baseline with extra training controls for experiments."""
+    """
+    Dueling Double DQN agent.
+
+    This version supports Fourier feature encoding for low-dimensional continuous
+    coordinates such as [x, y]. The environment still provides the original state.
+    The agent internally converts the raw coordinates into a richer feature vector.
+
+    Example:
+        raw state: [x, y]
+
+        encoded state with fourier_frequencies=4 and include_raw_state=True:
+        [
+            x_norm, y_norm,
+            sin(2*pi*1*x_norm), cos(2*pi*1*x_norm),
+            sin(2*pi*1*y_norm), cos(2*pi*1*y_norm),
+            sin(2*pi*2*x_norm), cos(2*pi*2*x_norm),
+            sin(2*pi*2*y_norm), cos(2*pi*2*y_norm),
+            ...
+        ]
+    """
 
     def __init__(
         self,
@@ -66,6 +86,9 @@ class DuelingDQNAgent(BaseAgent):
         double_dqn: bool = True,
         train_freq: int = 1,
         max_grad_norm: float = 10.0,
+        use_fourier_features: bool = True,
+        fourier_frequencies: int = 4,
+        include_raw_state: bool = True,
         seed: int = 0,
         device: str | None = None,
     ):
@@ -75,37 +98,64 @@ class DuelingDQNAgent(BaseAgent):
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        self.n_actions = n_actions
-        self.state_dim = state_dim
+        self.n_actions = int(n_actions)
 
-        self.alpha = learning_rate
-        self.gamma = gamma
-        self.epsilon = epsilon
+        # Raw environment state dimension, e.g. 2 for [x, y].
+        self.raw_state_dim = int(state_dim)
+        self.state_dim = self.raw_state_dim
+
+        self.alpha = float(learning_rate)
+        self.gamma = float(gamma)
+        self.epsilon = float(epsilon)
         self.epsilon_decay = epsilon_decay
-        self.min_epsilon = min_epsilon
+        self.min_epsilon = float(min_epsilon)
 
-        self.hidden_dim = hidden_dim
-        self.buffer_size = buffer_size
-        self.batch_size = batch_size
-        self.train_start = train_start
-        self.target_update_freq = target_update_freq
+        self.hidden_dim = int(hidden_dim)
+        self.buffer_size = int(buffer_size)
+        self.batch_size = int(batch_size)
+        self.train_start = int(train_start)
+        self.target_update_freq = int(target_update_freq)
         self.state_scale = float(state_scale) if state_scale else 1.0
-        self.double_dqn = double_dqn
+        self.double_dqn = bool(double_dqn)
 
         self.train_freq = max(1, int(train_freq))
         self.max_grad_norm = float(max_grad_norm)
+
+        self.use_fourier_features = bool(use_fourier_features)
+        self.fourier_frequencies = int(fourier_frequencies)
+        self.include_raw_state = bool(include_raw_state)
+
+        if self.use_fourier_features and self.fourier_frequencies <= 0:
+            raise ValueError("fourier_frequencies must be positive when use_fourier_features=True")
+
+        if self.use_fourier_features:
+            self.fourier_bands = 2.0 ** np.arange(self.fourier_frequencies, dtype=np.float32)
+        else:
+            self.fourier_bands = np.asarray([], dtype=np.float32)
+
+        self.encoded_state_dim = self._compute_encoded_state_dim()
 
         self.device = torch.device(
             device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
         )
 
-        self.q_net = DuelingQNetwork(state_dim, n_actions, hidden_dim).to(self.device)
-        self.target_net = DuelingQNetwork(state_dim, n_actions, hidden_dim).to(self.device)
+        self.q_net = DuelingQNetwork(
+            state_dim=self.encoded_state_dim,
+            n_actions=self.n_actions,
+            hidden_dim=self.hidden_dim,
+        ).to(self.device)
+
+        self.target_net = DuelingQNetwork(
+            state_dim=self.encoded_state_dim,
+            n_actions=self.n_actions,
+            hidden_dim=self.hidden_dim,
+        ).to(self.device)
+
         self.target_net.load_state_dict(self.q_net.state_dict())
         self.target_net.eval()
 
-        self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=learning_rate)
-        self.replay_buffer = deque(maxlen=buffer_size)
+        self.optimizer = torch.optim.Adam(self.q_net.parameters(), lr=self.alpha)
+        self.replay_buffer = deque(maxlen=self.buffer_size)
 
         self.last_state: np.ndarray | None = None
         self.last_action: int | None = None
@@ -115,16 +165,57 @@ class DuelingDQNAgent(BaseAgent):
 
         self.observed_states: set[tuple[float, ...]] = set()
 
+    def _compute_encoded_state_dim(self) -> int:
+        if not self.use_fourier_features:
+            return self.raw_state_dim
+
+        encoded_dim = 0
+
+        if self.include_raw_state:
+            encoded_dim += self.raw_state_dim
+
+        # For every raw coordinate and every frequency:
+        # sin(freq * coord), cos(freq * coord)
+        encoded_dim += self.raw_state_dim * 2 * self.fourier_frequencies
+
+        return encoded_dim
+
     def _ensure_state(self, state) -> np.ndarray:
         state_array = np.asarray(state, dtype=np.float32).reshape(-1)
 
-        if len(state_array) != self.state_dim:
+        if len(state_array) != self.raw_state_dim:
             raise ValueError(
-                f"Expected state_dim={self.state_dim}, got state with shape {np.asarray(state).shape}: {state}"
+                f"Expected raw_state_dim={self.raw_state_dim}, "
+                f"got state with shape {np.asarray(state).shape}: {state}"
             )
 
         self.observed_states.add(tuple(float(x) for x in state_array))
         return state_array
+
+    def _encode_states(self, states_array: np.ndarray) -> np.ndarray:
+        """
+        Convert raw environment states into network inputs.
+
+        First normalize coordinates by state_scale, then optionally append
+        Fourier features.
+        """
+        states_norm = states_array / self.state_scale
+
+        if not self.use_fourier_features:
+            return states_norm.astype(np.float32)
+
+        features = []
+
+        if self.include_raw_state:
+            features.append(states_norm)
+
+        for freq in self.fourier_bands:
+            angles = 2.0 * np.pi * freq * states_norm
+            features.append(np.sin(angles))
+            features.append(np.cos(angles))
+
+        encoded = np.concatenate(features, axis=1)
+        return encoded.astype(np.float32)
 
     def _states_to_tensor(
         self,
@@ -135,13 +226,14 @@ class DuelingDQNAgent(BaseAgent):
         if states_array.ndim == 1:
             states_array = states_array.reshape(1, -1)
 
-        if states_array.shape[1] != self.state_dim:
+        if states_array.shape[1] != self.raw_state_dim:
             raise ValueError(
-                f"Expected state_dim={self.state_dim}, got states with shape {states_array.shape}"
+                f"Expected raw_state_dim={self.raw_state_dim}, "
+                f"got states with shape {states_array.shape}"
             )
 
-        states_array = states_array / self.state_scale
-        return torch.tensor(states_array, dtype=torch.float32, device=self.device)
+        encoded_states = self._encode_states(states_array)
+        return torch.tensor(encoded_states, dtype=torch.float32, device=self.device)
 
     def train_mode(self):
         self.training = True
@@ -169,7 +261,12 @@ class DuelingDQNAgent(BaseAgent):
         return action
 
     def update(self, state, reward: float, action: int, terminated: bool = False):
-        """Store a transition and optionally run a gradient update."""
+        """
+        Store a transition and optionally run one gradient update.
+
+        The action argument should be the action that was taken from self.last_state
+        to reach the provided next state.
+        """
         if not self.training or self.last_state is None:
             return None
 
@@ -206,16 +303,23 @@ class DuelingDQNAgent(BaseAgent):
 
         states_tensor = self._states_to_tensor(states)
         next_states_tensor = self._states_to_tensor(next_states)
+
         actions_tensor = torch.tensor(actions, dtype=torch.long, device=self.device)
         rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=self.device)
         dones_tensor = torch.tensor(dones, dtype=torch.float32, device=self.device)
 
-        current_q = self.q_net(states_tensor).gather(1, actions_tensor.unsqueeze(1)).squeeze(1)
+        current_q = self.q_net(states_tensor).gather(
+            1,
+            actions_tensor.unsqueeze(1),
+        ).squeeze(1)
 
         with torch.no_grad():
             if self.double_dqn:
                 next_actions = self.q_net(next_states_tensor).argmax(dim=1, keepdim=True)
-                next_q = self.target_net(next_states_tensor).gather(1, next_actions).squeeze(1)
+                next_q = self.target_net(next_states_tensor).gather(
+                    1,
+                    next_actions,
+                ).squeeze(1)
             else:
                 next_q = self.target_net(next_states_tensor).max(dim=1)[0]
 
@@ -229,6 +333,7 @@ class DuelingDQNAgent(BaseAgent):
         self.optimizer.step()
 
         self.learn_step += 1
+
         if self.learn_step % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.q_net.state_dict())
 
@@ -244,21 +349,31 @@ class DuelingDQNAgent(BaseAgent):
 
     def get_q_values(self, state) -> np.ndarray:
         state_array = self._ensure_state(state)
+
+        was_training = self.q_net.training
         self.q_net.eval()
 
         with torch.no_grad():
-            q_values = self.q_net(self._states_to_tensor(state_array)).squeeze(0).cpu().numpy()
+            q_values = self.q_net(
+                self._states_to_tensor(state_array)
+            ).squeeze(0).cpu().numpy()
 
-        if self.training:
+        if was_training:
             self.q_net.train()
 
         return q_values
 
     def get_policy(self) -> dict[tuple[float, ...], int]:
-        return {s: int(np.argmax(self.get_q_values(s))) for s in self.observed_states}
+        return {
+            s: int(np.argmax(self.get_q_values(s)))
+            for s in self.observed_states
+        }
 
     def get_value_function(self) -> dict[tuple[float, ...], float]:
-        return {s: float(np.max(self.get_q_values(s))) for s in self.observed_states}
+        return {
+            s: float(np.max(self.get_q_values(s)))
+            for s in self.observed_states
+        }
 
     def save_model(self, path: str | Path):
         path = Path(path)
@@ -279,7 +394,8 @@ class DuelingDQNAgent(BaseAgent):
                 "epsilon_decay": self.epsilon_decay,
                 "min_epsilon": self.min_epsilon,
                 "n_actions": self.n_actions,
-                "state_dim": self.state_dim,
+                "raw_state_dim": self.raw_state_dim,
+                "encoded_state_dim": self.encoded_state_dim,
                 "hidden_dim": self.hidden_dim,
                 "buffer_size": self.buffer_size,
                 "batch_size": self.batch_size,
@@ -289,6 +405,9 @@ class DuelingDQNAgent(BaseAgent):
                 "double_dqn": self.double_dqn,
                 "train_freq": self.train_freq,
                 "max_grad_norm": self.max_grad_norm,
+                "use_fourier_features": self.use_fourier_features,
+                "fourier_frequencies": self.fourier_frequencies,
+                "include_raw_state": self.include_raw_state,
             },
         }
 
@@ -307,9 +426,13 @@ class DuelingDQNAgent(BaseAgent):
         self.epsilon = checkpoint.get("epsilon", self.epsilon)
         self.learn_step = checkpoint.get("learn_step", 0)
         self.env_step = checkpoint.get("env_step", 0)
-        self.observed_states = {tuple(s) for s in checkpoint.get("observed_states", [])}
+        self.observed_states = {
+            tuple(s)
+            for s in checkpoint.get("observed_states", [])
+        }
 
         self.replay_buffer.clear()
+
         for old_state, old_action, reward, next_state, done in checkpoint.get("replay_buffer", []):
             self.replay_buffer.append(
                 (
