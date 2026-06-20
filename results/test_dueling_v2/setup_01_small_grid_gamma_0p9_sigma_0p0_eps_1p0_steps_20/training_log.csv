@@ -1,0 +1,2 @@
+setup_id,episode,discounted_return,episode_length,success,epsilon,mean_loss,rolling_return,rolling_success_rate,rolling_episode_length,rolling_loss
+1,1,-23.672058438854314,20,0,1.0,nan,-23.672058438854314,0.0,20.0,nan

@@ -48,13 +48,44 @@ def parse_args():
     p.add_argument("--train_start", type=int, default=500, help="Number of transitions before gradient updates start.")
     p.add_argument("--target_update_freq", type=int, default=200, help="Hard target-network update frequency in gradient steps.")
     p.add_argument("--hidden_dim", type=int, default=128, help="Hidden layer width.")
-    p.add_argument("--state_scale", type=float, default=None, help="State normalization scale. If omitted, inferred from grid shape when possible.")
-    p.add_argument("--disable_double_dqn", action="store_true", help="Use vanilla DQN target instead of Double DQN target.")
+
+    p.add_argument(
+        "--state_scale",
+        type=float,
+        default=None,
+        help="State normalization scale. If omitted, inferred from grid shape.",
+    )
+
+    p.add_argument(
+        "--disable_double_dqn",
+        action="store_true",
+        help="Use vanilla DQN target instead of Double DQN target.",
+    )
 
     p.add_argument("--train_freq", type=int, default=1, help="Run one gradient update every N environment steps.")
     p.add_argument("--max_grad_norm", type=float, default=10.0, help="Gradient clipping norm.")
 
+    p.add_argument(
+        "--disable_fourier_features",
+        action="store_true",
+        help="Disable Fourier feature encoding and use only normalized raw coordinates.",
+    )
+
+    p.add_argument(
+        "--fourier_frequencies",
+        type=int,
+        default=4,
+        help="Number of Fourier frequency bands. Frequencies are [1, 2, 4, ..., 2^(k-1)].",
+    )
+
+    p.add_argument(
+        "--no_raw_state",
+        action="store_true",
+        help="Do not include normalized raw coordinates in the encoded state.",
+    )
+
     p.add_argument("--random_seed", type=int, default=0, help="Random seed value.")
+
     p.add_argument(
         "--start_pos",
         type=str,
@@ -82,6 +113,12 @@ def set_global_seeds(seed: int):
 
 
 def infer_state_scale(grid_path: Path) -> float:
+    """
+    Infer a reasonable scalar normalization factor from the grid shape.
+
+    If the grid has shape [height, width], using max(height, width) maps
+    coordinates approximately into [0, 1].
+    """
     try:
         grid = np.load(grid_path)
         return float(max(grid.shape[0], grid.shape[1], 1))
@@ -93,7 +130,26 @@ def make_name(value):
     return str(value).replace(".", "p").replace("/", "_").replace("\\", "_")
 
 
-def make_run_name(setup_id, grid, gamma, sigma, epsilon, max_steps):
+def make_run_name(
+    setup_id,
+    grid,
+    gamma,
+    sigma,
+    epsilon,
+    max_steps,
+    use_fourier_features,
+    fourier_frequencies,
+    include_raw_state,
+):
+    feature_tag = (
+        f"fourier{fourier_frequencies}"
+        if use_fourier_features
+        else "raw"
+    )
+
+    if use_fourier_features and not include_raw_state:
+        feature_tag += "_noraw"
+
     return (
         f"setup_{setup_id:02d}"
         f"_{grid.stem}"
@@ -101,14 +157,17 @@ def make_run_name(setup_id, grid, gamma, sigma, epsilon, max_steps):
         f"_sigma_{make_name(sigma)}"
         f"_eps_{make_name(epsilon)}"
         f"_steps_{make_name(max_steps)}"
+        f"_{feature_tag}"
     )
 
 
 def rolling_mean(values, window=100):
     result = []
+
     for i in range(len(values)):
         start = max(0, i - window + 1)
         result.append(float(np.mean(values[start:i + 1])))
+
     return result
 
 
@@ -132,6 +191,7 @@ def save_training_log(path, logs):
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
+
         for row in logs:
             writer.writerow(row)
 
@@ -158,6 +218,11 @@ def save_summary(path, rows):
         "double_dqn",
         "train_freq",
         "max_grad_norm",
+        "use_fourier_features",
+        "fourier_frequencies",
+        "include_raw_state",
+        "raw_state_dim",
+        "encoded_state_dim",
         "max_steps",
         "train_episodes",
         "eval_episodes",
@@ -175,6 +240,7 @@ def save_summary(path, rows):
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
+
         for row in rows:
             writer.writerow(row)
 
@@ -334,13 +400,33 @@ def train_one_setup(
     double_dqn,
     train_freq,
     max_grad_norm,
+    use_fourier_features,
+    fourier_frequencies,
+    include_raw_state,
     random_seed,
     start_pos,
     output_dir,
 ):
     set_global_seeds(random_seed)
 
-    run_name = make_run_name(setup_id, grid, gamma, sigma, epsilon, max_steps)
+    state_scale_for_run = (
+        infer_state_scale(grid)
+        if state_scale is None
+        else float(state_scale)
+    )
+
+    run_name = make_run_name(
+        setup_id=setup_id,
+        grid=grid,
+        gamma=gamma,
+        sigma=sigma,
+        epsilon=epsilon,
+        max_steps=max_steps,
+        use_fourier_features=use_fourier_features,
+        fourier_frequencies=fourier_frequencies,
+        include_raw_state=include_raw_state,
+    )
+
     setup_dir = output_dir / run_name
     setup_dir.mkdir(parents=True, exist_ok=True)
 
@@ -350,8 +436,6 @@ def train_one_setup(
         max_steps=max_steps,
         random_seed=random_seed,
     )
-
-    state_scale_for_run = 1.0 if state_scale is None else float(state_scale)
 
     print("\nRunning setup", setup_id)
     print("Grid:", grid)
@@ -364,9 +448,13 @@ def train_one_setup(
     print("Train start:", train_start)
     print("Target update freq:", target_update_freq)
     print("Observation size:", env.obs_size)
+    print("State scale:", state_scale_for_run)
     print("Train frequency:", train_freq)
     print("Max grad norm:", max_grad_norm)
     print("Double DQN target:", double_dqn)
+    print("Fourier features:", use_fourier_features)
+    print("Fourier frequencies:", fourier_frequencies)
+    print("Include raw state:", include_raw_state)
     print("Setup folder:", setup_dir)
 
     agent = DuelingDQNAgent(
@@ -386,8 +474,13 @@ def train_one_setup(
         double_dqn=double_dqn,
         train_freq=train_freq,
         max_grad_norm=max_grad_norm,
+        use_fourier_features=use_fourier_features,
+        fourier_frequencies=fourier_frequencies,
+        include_raw_state=include_raw_state,
         seed=random_seed,
     )
+
+    print("Encoded state dim:", agent.encoded_state_dim)
 
     agent.train_mode()
 
@@ -411,7 +504,15 @@ def train_one_setup(
             action = agent.take_action(state)
             next_state, reward, done, info = env.step(action)
 
-            loss = agent.update(next_state, reward, action, terminated=info["target_reached"])
+            # Use done as terminal signal for the DQN target.
+            # Success is still measured with info["target_reached"].
+            loss = agent.update(
+                next_state,
+                reward,
+                action,
+                terminated=done,
+            )
+
             if loss is not None:
                 losses.append(loss)
 
@@ -436,8 +537,17 @@ def train_one_setup(
         rolling_success = rolling_mean(episode_successes, window=100)
         rolling_lengths = rolling_mean(episode_lengths, window=100)
 
-        valid_recent_losses = [x for x in episode_mean_losses[-100:] if not np.isnan(x)]
-        rolling_loss = float(np.mean(valid_recent_losses)) if valid_recent_losses else float("nan")
+        valid_recent_losses = [
+            x
+            for x in episode_mean_losses[-100:]
+            if not np.isnan(x)
+        ]
+
+        rolling_loss = (
+            float(np.mean(valid_recent_losses))
+            if valid_recent_losses
+            else float("nan")
+        )
 
         logs.append(
             {
@@ -482,14 +592,14 @@ def train_one_setup(
     agent.save_model(model_path)
 
     eval_result = evaluate_agent(
-        grid,
-        agent,
-        eval_iter,
-        max_steps,
-        sigma,
-        gamma,
-        random_seed,
-        start_pos,
+        grid=grid,
+        agent=agent,
+        eval_iter=eval_iter,
+        max_steps=max_steps,
+        sigma=sigma,
+        gamma=gamma,
+        random_seed=random_seed,
+        start_pos=start_pos,
     )
 
     print("\nTraining finished for setup", setup_id)
@@ -502,6 +612,7 @@ def train_one_setup(
     print("Model saved to:", model_path)
 
     setup_summary_path = setup_dir / "summary.csv"
+
     setup_summary = [
         {
             "setup_id": setup_id,
@@ -522,6 +633,11 @@ def train_one_setup(
             "double_dqn": bool(double_dqn),
             "train_freq": int(train_freq),
             "max_grad_norm": float(max_grad_norm),
+            "use_fourier_features": bool(use_fourier_features),
+            "fourier_frequencies": int(fourier_frequencies),
+            "include_raw_state": bool(include_raw_state),
+            "raw_state_dim": int(agent.raw_state_dim),
+            "encoded_state_dim": int(agent.encoded_state_dim),
             "max_steps": int(max_steps),
             "train_episodes": int(iters),
             "eval_episodes": int(eval_iter),
@@ -563,6 +679,9 @@ def main(
     double_dqn: bool,
     train_freq: int,
     max_grad_norm: float,
+    use_fourier_features: bool,
+    fourier_frequencies: int,
+    include_raw_state: bool,
     random_seed: int,
     start_pos: tuple[int, int] | None,
     output_dir: Path,
@@ -600,6 +719,9 @@ def main(
                             double_dqn=double_dqn,
                             train_freq=train_freq,
                             max_grad_norm=max_grad_norm,
+                            use_fourier_features=use_fourier_features,
+                            fourier_frequencies=fourier_frequencies,
+                            include_raw_state=include_raw_state,
                             random_seed=random_seed,
                             start_pos=start_pos,
                             output_dir=output_dir,
@@ -621,8 +743,13 @@ if __name__ == "__main__":
     args = parse_args()
 
     start_pos = None
+
     if args.start_pos is not None:
         parts = args.start_pos.split(",")
+
+        if len(parts) != 2:
+            raise ValueError("--start_pos must have format col,row, for example 1,12")
+
         start_pos = (int(parts[0]), int(parts[1]))
 
     main(
@@ -647,6 +774,9 @@ if __name__ == "__main__":
         double_dqn=not args.disable_double_dqn,
         train_freq=args.train_freq,
         max_grad_norm=args.max_grad_norm,
+        use_fourier_features=not args.disable_fourier_features,
+        fourier_frequencies=args.fourier_frequencies,
+        include_raw_state=not args.no_raw_state,
         random_seed=args.random_seed,
         start_pos=start_pos,
         output_dir=args.output_dir,
