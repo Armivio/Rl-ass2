@@ -254,6 +254,67 @@ def summary_table(out_dir: str | Path, save: bool = True) -> pd.DataFrame:
     return base
 
 
+def _fmt_ci(mean, lo, decimals: int = 2) -> str:
+    """Format a value as 'mean ± halfwidth' (— if missing)."""
+    if mean is None or (isinstance(mean, float) and np.isnan(mean)):
+        return "—"
+    half = mean - lo if (lo is not None and not np.isnan(lo)) else 0.0
+    return f"{mean:.{decimals}f} ± {half:.{decimals}f}"
+
+
+def results_table_df(out_dir: str | Path) -> pd.DataFrame:
+    """Compact report table: one row per (grid, algo), metrics as mean ± 95% CI."""
+    tbl = summary_table(out_dir, save=False)
+    rows = []
+    for _, r in tbl.iterrows():
+        rows.append({
+            "Grid": r["grid"],
+            "Method": r["algo"],
+            "Success rate": _fmt_ci(r["final_success_mean"], r["final_success_lo"], 2),
+            "Conv. AUC": _fmt_ci(r["auc_mean"], r["auc_lo"], 2),
+            "Episodes→80%": _fmt_ci(r["ep_to_thr_mean"], r["ep_to_thr_lo"], 0),
+            "Steps-to-goal": _fmt_ci(r["steps_to_goal_mean"], r["steps_to_goal_lo"], 1),
+            "Composite": _fmt_ci(r["composite_mean"], r["composite_lo"], 2),
+        })
+    return pd.DataFrame(rows)
+
+
+def _to_markdown(df: pd.DataFrame) -> str:
+    cols = list(df.columns)
+    out = ["| " + " | ".join(cols) + " |",
+           "|" + "|".join(["---"] * len(cols)) + "|"]
+    for _, r in df.iterrows():
+        out.append("| " + " | ".join(str(r[c]) for c in cols) + " |")
+    return "\n".join(out) + "\n"
+
+
+def _to_latex(df: pd.DataFrame, caption: str) -> str:
+    cols = list(df.columns)
+    spec = "ll" + "c" * (len(cols) - 2)
+    esc = lambda s: (str(s).replace("±", r"$\pm$").replace("→", r"$\rightarrow$")
+                     .replace("%", r"\%").replace("—", "--").replace("_", r"\_"))
+    lines = [r"\begin{table}[t]", r"\centering",
+             r"\caption{" + caption + "}",
+             r"\begin{tabular}{" + spec + "}", r"\toprule",
+             " & ".join(esc(c) for c in cols) + r" \\", r"\midrule"]
+    for _, r in df.iterrows():
+        lines.append(" & ".join(esc(r[c]) for c in cols) + r" \\")
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    return "\n".join(lines) + "\n"
+
+
+def write_tables(out_dir: str | Path) -> dict:
+    """Write results_table.md and results_table.tex; return the DataFrame + paths."""
+    out_dir = Path(out_dir)
+    df = results_table_df(out_dir)
+    md_path = out_dir / "results_table.md"
+    tex_path = out_dir / "results_table.tex"
+    md_path.write_text(_to_markdown(df))
+    tex_path.write_text(_to_latex(
+        df, "DQN vs Dueling DQN across grids (mean $\\pm$ 95\\% CI over seeds)."))
+    return {"df": df, "md": md_path, "tex": tex_path}
+
+
 def print_summary(out_dir: str | Path) -> None:
     """Human-readable console summary + pairwise significance on final success."""
     train_df, eval_df = load_results(out_dir)
@@ -264,6 +325,10 @@ def print_summary(out_dir: str | Path) -> None:
     show = tbl[["grid", "algo", "final_success_mean", "auc_mean",
                 "ep_to_thr_mean", "steps_to_goal_mean", "composite_mean"]]
     print(show.round(3).to_string(index=False))
+
+    tables = write_tables(out_dir)
+    print(f"\n=== Report table (mean ± 95% CI) — saved to {tables['md']} + .tex ===")
+    print(_to_markdown(tables["df"]))
 
     # Paired test is primary (same seeds => matched design); Welch shown for ref.
     fs = _final_success_per_seed(eval_df)

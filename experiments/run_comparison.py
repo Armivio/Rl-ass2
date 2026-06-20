@@ -90,17 +90,23 @@ def build_hp(args, episodes: int, max_steps: int) -> dict:
 
 
 def make_env(grid_fp: Path, sigma: float, seed: int, args) -> ContinuousEnvironment:
+    # Progress shaping is applied RUNNER-side (see run_one) so we can control the
+    # potential-based gamma factor; the env's own progress term is left off.
     return ContinuousEnvironment(
         grid_fp=grid_fp,
         n_rays=args.n_rays,
         sigma=sigma,
         max_steps=args.max_steps,
         use_orientation=not args.no_orientation,
-        progress_reward_weight=args.progress_reward,
+        progress_reward_weight=0.0,
         obstacle_proximity_weight=args.obstacle_penalty,
         obstacle_proximity_threshold=args.obstacle_threshold,
         random_seed=seed,
     )
+
+
+def _manhattan(a, b) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
 
 def run_one(algo: str, grid_fp: Path, seed: int, args, hp: dict,
@@ -117,6 +123,9 @@ def run_one(algo: str, grid_fp: Path, seed: int, args, hp: dict,
           f"episodes={args.episodes} eval_starts={len(eval_starts)} "
           f"(min_dist={args.eval_min_dist})")
 
+    target = env.target_pos
+    w, pg = args.progress_reward, args.progress_gamma   # shaping weight + potential gamma
+
     global_step = 0
     t0 = time.time()
     for ep in range(args.episodes):
@@ -126,7 +135,15 @@ def run_one(algo: str, grid_fp: Path, seed: int, args, hp: dict,
         info = {}
         while not done:
             action = adapter.select_action(obs, greedy=False)
+            prev_dist = _manhattan(env.agent_pos, target)
             next_obs, reward, done, info = env.step(action)
+            # Progress / potential-based reward shaping (PBRS):
+            #   F = w * (Phi(s) - gamma * Phi(s')),  Phi(s) = -manhattan(s, target)
+            #   => w * (prev_dist - gamma * new_dist).  gamma=1 -> naive progress bonus;
+            #   gamma=env-gamma -> true PBRS (Ng et al. 1999), provably policy-invariant.
+            if w != 0.0:
+                new_dist = _manhattan(info["agent_pos"], target)
+                reward += w * (prev_dist - pg * new_dist)
             terminal = bool(info["target_reached"])     # truncation must NOT zero bootstrap
             loss = adapter.on_transition(obs, action, reward, next_obs, terminal)
             if loss is not None:
@@ -182,7 +199,12 @@ def parse_args():
     p.add_argument("--eval-sigma", dest="eval_sigma", type=float, default=0.0)
     p.add_argument("--n-rays", dest="n_rays", type=int, default=8)
     p.add_argument("--no-orientation", dest="no_orientation", action="store_true")
-    p.add_argument("--progress-reward", dest="progress_reward", type=float, default=0.0)
+    p.add_argument("--progress-reward", dest="progress_reward", type=float, default=0.0,
+                   help="Progress-shaping weight w (0 = sparse / no shaping).")
+    p.add_argument("--progress-gamma", dest="progress_gamma", type=float, default=1.0,
+                   help="Potential gamma for progress shaping: w*(prev - gamma*new). "
+                        "1.0 = naive progress bonus; set to the env gamma (e.g. 0.99) "
+                        "for true potential-based shaping (PBRS, Ng et al. 1999).")
     p.add_argument("--obstacle-penalty", dest="obstacle_penalty", type=float, default=0.0)
     p.add_argument("--obstacle-threshold", dest="obstacle_threshold", type=float, default=0.15)
     # normalized hyper-parameters (shared)

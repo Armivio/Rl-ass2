@@ -116,7 +116,7 @@ class DuelingAdapter(AgentAdapter):
             learning_rate=hp.get("lr", 1e-3),
             gamma=hp.get("gamma", 0.99),
             epsilon=hp.get("eps_start", 1.0),
-            epsilon_decay=float(hp["eps_decay_mult"]),
+            epsilon_decay=None,                 # adapter drives epsilon externally (see below)
             min_epsilon=hp.get("eps_end", 0.05),
             n_actions=n_actions,
             state_dim=obs_size,                 # CRITICAL: default is 2, must be obs_size
@@ -133,6 +133,18 @@ class DuelingAdapter(AgentAdapter):
             device=hp.get("device"),
         )
         self.agent.train_mode()
+        # Identical step-based LINEAR epsilon schedule to DQN (epsilon() in dqn_agent),
+        # so the two agents explore on exactly the same curve, not just the same
+        # endpoints. This removes the epsilon-shape confound (DQN linear-over-steps vs
+        # Dueling geometric-per-episode) flagged in review.
+        self._eps_start = float(hp.get("eps_start", 1.0))
+        self._eps_end = float(hp.get("eps_end", 0.05))
+        self._eps_decay_steps = max(1, int(hp["eps_decay_steps"]))
+        self._step = 0
+
+    def _linear_eps(self) -> float:
+        frac = min(1.0, self._step / self._eps_decay_steps)
+        return self._eps_start + frac * (self._eps_end - self._eps_start)
 
     def select_action(self, obs, *, greedy: bool) -> int:
         # take_action() stores last_state/last_action that update() consumes next.
@@ -140,14 +152,16 @@ class DuelingAdapter(AgentAdapter):
             self.agent.eval_mode()
         else:
             self.agent.train_mode()
+            self.agent.epsilon = self._linear_eps()   # same linear curve as DQN
         return self.agent.take_action(obs)
 
     def on_transition(self, obs, action, reward, next_obs, terminal) -> float | None:
         # update() treats its first arg as the NEXT state (old_state = last_state).
+        self._step += 1
         return self.agent.update(next_obs, reward, action, terminated=terminal)
 
     def on_episode_end(self) -> None:
-        self.agent.decay_epsilon()
+        pass  # epsilon now anneals per-step (see _linear_eps), not per-episode
 
     def epsilon(self) -> float:
         return float(getattr(self.agent, "epsilon", float("nan")))

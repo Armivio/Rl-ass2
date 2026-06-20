@@ -49,9 +49,26 @@ Writes two tidy long-format CSVs under `--out-dir` (default `experiments/results
 | `train_metrics.csv` | (algo, grid, seed, episode) | `episode_return, episode_length, success, epsilon, mean_loss` |
 | `eval_metrics.csv` | (algo, grid, seed, eval-checkpoint) | `success_rate, mean_return, mean_steps_to_goal, eval_kind` |
 
-Both algorithms (`DQN`, `DuelingDQN`) and reward shaping (`--progress-reward`,
-`--obstacle-penalty`) are applied identically. Ablations: `--double-dqn`,
-`--sigma`, `--progress-reward 0.5`, `--eval-min-dist N`.
+Both algorithms (`DQN`, `DuelingDQN`) share one protocol: same env, same seeds,
+normalized hyper-parameters, and an **identical step-based linear epsilon schedule**
+(so they explore on the same curve, not just the same endpoints). Ablations:
+`--double-dqn`, `--sigma`, `--eval-min-dist N`.
+
+### Reward-shaping safety experiment (the deceptive grid's real purpose)
+
+Progress shaping is `reward += w * (prev_dist - gamma * new_dist)` (potential
+Φ = −Manhattan-to-target), controlled by `--progress-reward w` and
+`--progress-gamma`:
+
+| setting | flags | expectation on `deceptive_grid` |
+|---|---|---|
+| sparse | (default, `w=0`) | escapes the trap (slowly) |
+| naive progress | `--progress-reward 0.5 --progress-gamma 1.0` | **lured into the trap** — shaping is distance-greedy |
+| true PBRS | `--progress-reward 0.5 --progress-gamma 0.99` | escapes — policy-invariant (Ng et al. 1999) |
+
+Run the same grids three times into three `--out-dir`s (e.g. `.../sparse`,
+`.../naive`, `.../pbrs`) and compare. This is why the deceptive grid exists — it is
+a reward-shaping **safety** testbed, not a DQN-vs-Dueling discriminator.
 
 ## 3. Metrics + significance
 

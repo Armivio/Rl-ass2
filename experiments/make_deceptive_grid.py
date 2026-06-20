@@ -9,11 +9,19 @@ wall -- the target is only ~2 cells away but unreachable from inside. The single
 real route detours **north** over the pocket's top arm, which a distance-greedy
 policy never takes because the first detour steps *increase* the distance.
 
-This stresses exploration and value-decomposition: a naive (greedy / poorly
-explored) policy converges to the trap, while a method that explores and learns
-state values can find the detour. The rays remain untyped (wall / obstacle /
-target indistinguishable), so the layout adds difficulty without leaking the
-target location into the state -- rubric-safe.
+What this grid is for (scope -- read before citing it)
+------------------------------------------------------
+The trap is defined w.r.t. a *Manhattan-greedy* policy. DQN and Dueling DQN never
+observe Manhattan distance (it is not in the state), so the pocket is NOT expected
+to discriminate the two architectures -- and empirically it does not (both solve it
+about equally). Its real purpose is a **reward-shaping safety / exploration
+testbed**: naive progress shaping (``w*(prev-new)``) is itself a distance-greedy
+signal, so it should *lure the reward-shaped agent into the trap*, whereas sparse
+reward and true potential-based shaping (PBRS, ``w*(prev-gamma*new)``) should
+escape. Run the grid under {sparse, naive, PBRS} (see ``run_comparison.py``'s
+``--progress-reward`` / ``--progress-gamma``) to demonstrate that. The rays remain
+untyped (wall / obstacle / target indistinguishable), so the layout adds difficulty
+without leaking the target location into the state -- rubric-safe.
 
 Run
 ---

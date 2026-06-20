@@ -112,6 +112,41 @@ def plot_learning_curves_return(train_df: pd.DataFrame, out_path: str | Path,
     return _save(fig, out_path)
 
 
+def plot_loss_curves(train_df: pd.DataFrame, out_path: str | Path,
+                     smooth: int = 20) -> Path:
+    """Training (Huber) loss vs episode — evidence the networks converge."""
+    grids = _grids(train_df)
+    fig, axes, total = _grid_axes(len(grids))
+    for ax, grid in zip(axes, grids):
+        for algo in _algos(train_df):
+            g = train_df[(train_df.algo == algo) & (train_df.grid == grid)]
+            piv = g.pivot_table(index="episode", columns="seed", values="mean_loss")
+            sm = piv.rolling(smooth, min_periods=1).mean()
+            vals = sm.values
+            mean = np.nanmean(vals, axis=1)
+            n = vals.shape[1]
+            if n > 1:
+                sd = np.nanstd(vals, axis=1, ddof=1)
+                h = _t_crit(n - 1) * sd / math.sqrt(n)
+            else:
+                h = np.zeros_like(mean)
+            x = sm.index.values
+            c = COLORS.get(algo)
+            ax.plot(x, mean, color=c, label=algo, linewidth=2)
+            ax.fill_between(x, mean - h, mean + h, color=c, alpha=0.2)
+        ax.set_title(grid)
+        ax.set_xlabel("training episode")
+        ax.set_ylabel(f"Huber loss (MA{smooth})")
+        ax.set_yscale("log")
+        ax.grid(alpha=0.3)
+        ax.legend()
+    for ax in axes[len(grids):]:
+        ax.axis("off")
+    fig.suptitle("Training loss over time (log scale, mean ± 95% CI)")
+    fig.tight_layout()
+    return _save(fig, out_path)
+
+
 # --------------------------------------------------------------------- bar charts
 def _grouped_bars(agg: pd.DataFrame, ax, ylabel: str, title: str,
                   clip01: bool = False):
@@ -212,6 +247,7 @@ def make_all_plots(out_dir: str | Path) -> list[Path]:
     paths = [
         plot_learning_curves_success(eval_df, pdir / "learning_curves_success.png"),
         plot_learning_curves_return(train_df, pdir / "learning_curves_return.png"),
+        plot_loss_curves(train_df, pdir / "loss_curves.png"),
         plot_final_success_bars(eval_df, pdir / "final_success_bars.png"),
         plot_auc_bars(eval_df, pdir / "auc_bars.png"),
         plot_composite_bars(eval_df, train_df, pdir / "composite_bars.png"),
