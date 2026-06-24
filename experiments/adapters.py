@@ -129,6 +129,7 @@ class DuelingAdapter(AgentAdapter):
             double_dqn=hp.get("double_dqn", False),
             train_freq=hp.get("train_freq", 1),
             max_grad_norm=hp.get("max_grad_norm", 10.0),
+            use_fourier_features=hp.get("use_fourier_features", True),  # ablation toggle
             seed=seed,
             device=hp.get("device"),
         )

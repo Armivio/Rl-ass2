@@ -85,6 +85,7 @@ def build_hp(args, episodes: int, max_steps: int) -> dict:
         "eps_end": args.eps_end,
         "eps_decay_steps": eps_decay_steps,
         "eps_decay_mult": eps_decay_mult,
+        "use_fourier_features": not args.no_fourier,   # Dueling-only ablation toggle
         "device": args.device,
     }
 
@@ -217,6 +218,9 @@ def parse_args():
     p.add_argument("--target-update", dest="target_update", type=int, default=500)
     p.add_argument("--double-dqn", dest="double_dqn", action="store_true",
                    help="Use Double-DQN target for BOTH agents (ablation).")
+    p.add_argument("--no-fourier", dest="no_fourier", action="store_true",
+                   help="Disable Dueling's Fourier feature encoding (raw input, "
+                        "same as DQN) -- ablation isolating the dueling architecture.")
     p.add_argument("--train-freq", dest="train_freq", type=int, default=1)
     p.add_argument("--max-grad-norm", dest="max_grad_norm", type=float, default=10.0)
     p.add_argument("--state-scale", dest="state_scale", type=float, default=1.0)
